@@ -1,5 +1,16 @@
-name: ReducerPlugin
-version: 1.0.0
-main: mc.api.ReducerPlugin
-author: kanes48
-description: Has functionality for a knockback trainer.
+  name: KnockbackReducer
+  version: 1.0.0
+  main: mc.api.ReducerPlugin
+  author: kanes48
+  description: Player NPC knockback trainer with void rescue
+
+  commands:
+    reducer:
+      description: Manage the knockback reducer
+      usage: /reducer <kb|status>
+      permission: reducer.admin
+
+  permissions:
+    reducer.admin:
+      description: Allows changing reducer knockback settings
+      default: op

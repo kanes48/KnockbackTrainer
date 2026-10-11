@@ -1,35 +1,37 @@
 package mc.api;
 
+import java.util.UUID;
+
+import net.citizensnpcs.api.CitizensAPI;
+import net.citizensnpcs.api.npc.NPC;
+
 import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
-import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.enchantments.Enchantment;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Zombie;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.entity.EntityTargetEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
-import org.bukkit.inventory.ItemStack;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.potion.PotionEffect;
-import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.Vector;
 
 public class ReducerPlugin extends JavaPlugin implements Listener {
 
-    private static final String NPC_NAME = "§cKnockback Trainer";
-
-    private Zombie npc;
+    private NPC reducer;
     private Location home;
-    private boolean activated = false;
+
+    // The player who most recently hit the reducer.
+    private UUID targetId;
 
     private int attackInterval;
     private double horizontalKnockback;
@@ -37,52 +39,63 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onEnable() {
+        getLogger().info("Plugin for Reducer loaded.");
+
+
         saveDefaultConfig();
+        loadSettings();
+
         getServer().getPluginManager().registerEvents(this, this);
 
-        attackInterval = Math.max(
-                1, getConfig().getInt("npc.attack-interval-ticks", 20));
-        horizontalKnockback =
-                getConfig().getDouble("npc.horizontal-knockback", 1.15);
-        verticalKnockback =
-                getConfig().getDouble("npc.vertical-knockback", 0.42);
+        if (!spawnReducer()) {
+            getLogger().severe(
+                    "Reducer could not spawn. Check npc.world and coordinates."
+            );
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
 
-        spawnTrainer();
-
-        // Attack repeatedly, but only after the NPC has been hit.
-        Bukkit.getScheduler().runTaskTimer(this, () -> {
-            if (!activated || npc == null || !npc.isValid()) {
-                return;
-            }
-
-            Player target = findNearestPlayer();
-            if (target != null) {
-                knockBack(target);
+        // Repeatedly knock back only the current target.
+        Bukkit.getScheduler().runTaskTimer(this, new Runnable() {
+            @Override
+            public void run() {
+                attackTarget();
             }
         }, attackInterval, attackInterval);
 
-        // Keep the NPC at its configured location.
-        Bukkit.getScheduler().runTaskTimer(this, () -> {
-            if (npc == null || !npc.isValid() || home == null) {
-                return;
+        // Keep the NPC stationary and at its configured location.
+        Bukkit.getScheduler().runTaskTimer(this, new Runnable() {
+            @Override
+            public void run() {
+                keepReducerStationary();
             }
-
-            if (npc.getLocation().distanceSquared(home) > 0.01) {
-                npc.teleport(home);
-            }
-            npc.setVelocity(new Vector(0, 0, 0));
         }, 1L, 1L);
 
-        getLogger().info("VoidRescue and Knockback Trainer enabled.");
+        getLogger().info("KnockbackReducer enabled.");
     }
 
-    private void spawnTrainer() {
+    private void loadSettings() {
+        attackInterval = Math.max(
+                1,
+                getConfig().getInt("npc.attack-interval-ticks", 20)
+        );
+
+        horizontalKnockback = getConfig().getDouble(
+                "npc.horizontal-knockback", 1.15
+        );
+
+        verticalKnockback = getConfig().getDouble(
+                "npc.vertical-knockback", 0.42
+        );
+    }
+
+    private boolean spawnReducer() {
         String worldName = getConfig().getString("npc.world", "world");
         World world = Bukkit.getWorld(worldName);
 
         if (world == null) {
-            getLogger().severe("NPC world '" + worldName + "' is not loaded!");
-            return;
+            getLogger().severe("World is not loaded: " + worldName);
+            return false;
         }
 
         home = new Location(
@@ -94,46 +107,106 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
                 (float) getConfig().getDouble("npc.pitch", 0.0)
         );
 
-        // Remove any old trainer copies.
-        for (Entity entity : world.getEntities()) {
-            if (isTrainer(entity)) {
-                entity.remove();
-            }
+        // Create a real player-model NPC through Citizens.
+        reducer = CitizensAPI.getNPCRegistry().createNPC(
+                EntityType.PLAYER,
+                ChatColor.RED + "Knockback Trainer"
+        );
+
+        // It must be possible to hit the NPC to activate it.
+        reducer.setProtected(false);
+
+        if (!reducer.spawn(home)) {
+            reducer.destroy();
+            reducer = null;
+            return false;
         }
 
-        npc = (Zombie) world.spawnEntity(home, EntityType.ZOMBIE);
-        npc.setCustomName(NPC_NAME);
-        npc.setCustomNameVisible(true);
-        npc.setRemoveWhenFarAway(false);
-        npc.setCanPickupItems(false);
-        npc.addPotionEffect(new PotionEffect(
-                PotionEffectType.SLOW, Integer.MAX_VALUE, 10));
-
-        ItemStack stick = new ItemStack(Material.STICK);
-        stick.addUnsafeEnchantment(Enchantment.KNOCKBACK, 2);
-        npc.getEquipment().setItemInHand(stick);
-        npc.getEquipment().setItemInHandDropChance(0.0F);
+        targetId = null;
+        return true;
     }
 
-    private boolean isTrainer(Entity entity) {
-        return entity instanceof Zombie
-                && NPC_NAME.equals(entity.getCustomName());
+    private boolean isReducer(Entity entity) {
+        return reducer != null
+                && reducer.isSpawned()
+                && reducer.getEntity() != null
+                && reducer.getEntity().getUniqueId()
+                .equals(entity.getUniqueId());
     }
 
-    // Rescue Survival players who fall below Y = 0.
-    @EventHandler
+    /*
+     * Any player who hits the reducer becomes the active target.
+     * The NPC itself never takes damage.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onReducerHit(EntityDamageByEntityEvent event) {
+        if (!isReducer(event.getEntity())) {
+            return;
+        }
+
+        event.setCancelled(true);
+
+        if (event.getDamager() instanceof Player) {
+            Player attacker = (Player) event.getDamager();
+
+            if (attacker.isOnline() && !attacker.isDead()) {
+                targetId = attacker.getUniqueId();
+
+                attacker.sendMessage(
+                        ChatColor.GREEN
+                                + "The reducer is now targeting you!"
+                );
+            }
+        }
+    }
+
+    /*
+     * Prevent every other type of damage to the reducer,
+     * including fall, fire, and environmental damage.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onReducerDamage(EntityDamageEvent event) {
+        if (isReducer(event.getEntity())) {
+            event.setCancelled(true);
+        }
+    }
+
+    /*
+     * Disable fall damage for all players in every game mode.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onFallDamage(EntityDamageEvent event) {
+        if (event.getEntity() instanceof Player
+                && event.getCause() == EntityDamageEvent.DamageCause.FALL) {
+            event.setCancelled(true);
+        }
+    }
+
+    /*
+     * Rescue Survival players who go below Y = 0.
+     * If the player is the active target, clear the target FIRST.
+     */
+    @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerMove(PlayerMoveEvent event) {
         if (event.getTo() == null || event.getTo().getY() >= 0) {
             return;
         }
 
         Player player = event.getPlayer();
+
+        if (targetId != null
+                && targetId.equals(player.getUniqueId())) {
+            targetId = null;
+        }
+
         if (player.getGameMode() != GameMode.SURVIVAL) {
             return;
         }
 
-        String worldName =
-                getConfig().getString("destination.world", "world");
+        String worldName = getConfig().getString(
+                "destination.world", "world"
+        );
+
         World destinationWorld = Bukkit.getWorld(worldName);
 
         if (destinationWorld == null) {
@@ -150,63 +223,50 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
         );
 
         player.teleport(destination);
+        player.setFallDistance(0.0F);
     }
 
-    // Hitting the NPC activates it, but never damages or kills it.
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onTrainerHit(EntityDamageByEntityEvent event) {
-        if (!isTrainer(event.getEntity())) {
+    /*
+     * Knock back the latest attacker at each configured interval.
+     */
+    private void attackTarget() {
+        if (targetId == null) {
             return;
         }
 
-        event.setCancelled(true);
+        Player target = Bukkit.getPlayer(targetId);
 
-        if (event.getDamager() instanceof Player) {
-            activated = true;
-        }
-    }
-
-    @EventHandler
-    public void onTrainerDamage(EntityDamageEvent event) {
-        if (isTrainer(event.getEntity())
-                && !(event instanceof EntityDamageByEntityEvent)) {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler
-    public void onTrainerTarget(EntityTargetEvent event) {
-        if (isTrainer(event.getEntity())) {
-            event.setCancelled(true);
-        }
-    }
-
-    private Player findNearestPlayer() {
-        Player nearest = null;
-        double nearestDistance = Double.MAX_VALUE;
-
-        for (Player player : home.getWorld().getPlayers()) {
-            if (player.isDead()
-                    || player.getGameMode() == GameMode.CREATIVE
-                    || player.getGameMode() == GameMode.SPECTATOR) {
-                continue;
-            }
-
-            double distance =
-                    player.getLocation().distanceSquared(home);
-
-            if (distance < nearestDistance) {
-                nearestDistance = distance;
-                nearest = player;
-            }
+        if (target == null || !target.isOnline() || target.isDead()) {
+            targetId = null;
+            return;
         }
 
-        return nearest;
+        if (target.getGameMode() == GameMode.CREATIVE
+                || target.getGameMode() == GameMode.SPECTATOR) {
+            targetId = null;
+            return;
+        }
+
+        // Only attack players in the reducer's world.
+        if (!target.getWorld().equals(home.getWorld())) {
+            targetId = null;
+            return;
+        }
+
+        // Safety check in case a movement event was missed.
+        if (target.getLocation().getY() < 0) {
+            targetId = null;
+            return;
+        }
+
+        applyKnockback(target);
     }
 
-    private void knockBack(Player player) {
+    private void applyKnockback(Player player) {
         Vector direction = player.getLocation().toVector()
                 .subtract(home.toVector());
+
+        // Knockback direction should be horizontal.
         direction.setY(0);
 
         if (direction.lengthSquared() < 0.0001) {
@@ -222,10 +282,140 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
         ));
     }
 
+    /*
+     * Reset NPC velocity and position so that it cannot be
+     * knocked away from its configured location.
+     */
+    private void keepReducerStationary() {
+        if (reducer == null || !reducer.isSpawned() || home == null) {
+            return;
+        }
+
+        Entity entity = reducer.getEntity();
+
+        if (entity == null || !entity.isValid()) {
+            return;
+        }
+
+        if (!entity.getWorld().equals(home.getWorld())
+                || entity.getLocation().distanceSquared(home) > 0.01) {
+            entity.teleport(home);
+        }
+
+        entity.setVelocity(new Vector(0, 0, 0));
+        entity.setFallDistance(0.0F);
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        if (targetId != null
+                && targetId.equals(event.getPlayer().getUniqueId())) {
+            targetId = null;
+        }
+    }
+
+    /*
+     * Commands:
+     * /reducer kb <horizontal> <vertical>
+     * /reducer status
+     */
+    @Override
+    public boolean onCommand(
+            CommandSender sender,
+            Command command,
+            String label,
+            String[] args
+    ) {
+        if (!command.getName().equalsIgnoreCase("reducer")) {
+            return false;
+        }
+
+        if (!sender.hasPermission("reducer.admin")) {
+            sender.sendMessage(
+                    ChatColor.RED + "You do not have permission."
+            );
+            return true;
+        }
+
+        if (args.length == 1
+                && args[0].equalsIgnoreCase("status")) {
+            sender.sendMessage(ChatColor.GOLD + "Reducer status");
+            sender.sendMessage(ChatColor.YELLOW
+                    + "Horizontal: " + horizontalKnockback);
+            sender.sendMessage(ChatColor.YELLOW
+                    + "Vertical: " + verticalKnockback);
+            sender.sendMessage(ChatColor.YELLOW
+                    + "Interval: " + attackInterval + " ticks");
+            sender.sendMessage(ChatColor.YELLOW
+                    + "Target: "
+                    + (targetId == null ? "none" : targetId.toString()));
+            return true;
+        }
+
+        if (args.length == 3
+                && (args[0].equalsIgnoreCase("kb")
+                || args[0].equalsIgnoreCase("knockback"))) {
+
+            final double horizontal;
+            final double vertical;
+
+            try {
+                horizontal = Double.parseDouble(args[1]);
+                vertical = Double.parseDouble(args[2]);
+            } catch (NumberFormatException ex) {
+                sender.sendMessage(ChatColor.RED
+                        + "Both knockback values must be numbers.");
+                return true;
+            }
+
+            if (Double.isNaN(horizontal)
+                    || Double.isInfinite(horizontal)
+                    || Double.isNaN(vertical)
+                    || Double.isInfinite(vertical)
+                    || horizontal < 0
+                    || vertical < 0
+                    || horizontal > 10
+                    || vertical > 10) {
+                sender.sendMessage(ChatColor.RED
+                        + "Values must be between 0 and 10.");
+                return true;
+            }
+
+            horizontalKnockback = horizontal;
+            verticalKnockback = vertical;
+
+            getConfig().set(
+                    "npc.horizontal-knockback", horizontalKnockback
+            );
+            getConfig().set(
+                    "npc.vertical-knockback", verticalKnockback
+            );
+
+            saveConfig();
+
+            sender.sendMessage(ChatColor.GREEN
+                    + "Knockback updated: horizontal=" + horizontalKnockback
+                    + ", vertical=" + verticalKnockback);
+            return true;
+        }
+
+        sender.sendMessage(ChatColor.YELLOW
+                + "/reducer kb <horizontal> <vertical>");
+        sender.sendMessage(ChatColor.YELLOW + "/reducer status");
+        return true;
+    }
+
     @Override
     public void onDisable() {
-        if (npc != null && npc.isValid()) {
-            npc.remove();
+        targetId = null;
+
+        if (reducer != null) {
+            if (reducer.isSpawned()) {
+                reducer.despawn();
+            }
+
+            reducer.destroy();
+            reducer = null;
         }
     }
 }

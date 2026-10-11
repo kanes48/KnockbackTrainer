@@ -6,11 +6,18 @@ destination:
 
 npc:
   world: world
+
   x: 57.5
   y: 7
   z: -1081.5
+
+  # Direction the reducer initially faces
   yaw: 0.0
   pitch: 0.0
+
+  # Time between knockback hits, in server ticks
   attack-interval-ticks: 20
+
+  # Initial knockback strength
   horizontal-knockback: 1.15
   vertical-knockback: 0.42

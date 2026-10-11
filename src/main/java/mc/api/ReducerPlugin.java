@@ -1,7 +1,5 @@
 package mc.api;
 
-import java.util.UUID;
-
 import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.npc.NPC;
 
@@ -9,9 +7,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.enchantments.Enchantment;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
@@ -21,8 +21,8 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
 
 public class ReducerPlugin extends JavaPlugin implements Listener {
@@ -30,56 +30,31 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
     private NPC reducer;
     private Location home;
 
-    // The player who most recently hit the reducer.
-    private UUID targetId;
-
-    private int attackInterval;
     private double horizontalKnockback;
     private double verticalKnockback;
 
     @Override
     public void onEnable() {
-        getLogger().info("Plugin for Reducer loaded.");
-
-
         saveDefaultConfig();
         loadSettings();
 
         getServer().getPluginManager().registerEvents(this, this);
 
         if (!spawnReducer()) {
-            getLogger().severe(
-                    "Reducer could not spawn. Check npc.world and coordinates."
-            );
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
 
-        // Repeatedly knock back only the current target.
-        Bukkit.getScheduler().runTaskTimer(this, new Runnable() {
-            @Override
-            public void run() {
-                attackTarget();
-            }
-        }, attackInterval, attackInterval);
-
-        // Keep the NPC stationary and at its configured location.
+        // Keep the NPC at its configured location.
         Bukkit.getScheduler().runTaskTimer(this, new Runnable() {
             @Override
             public void run() {
                 keepReducerStationary();
             }
         }, 1L, 1L);
-
-        getLogger().info("KnockbackReducer enabled.");
     }
 
     private void loadSettings() {
-        attackInterval = Math.max(
-                1,
-                getConfig().getInt("npc.attack-interval-ticks", 20)
-        );
-
         horizontalKnockback = getConfig().getDouble(
                 "npc.horizontal-knockback", 1.15
         );
@@ -94,7 +69,7 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
         World world = Bukkit.getWorld(worldName);
 
         if (world == null) {
-            getLogger().severe("World is not loaded: " + worldName);
+            getLogger().severe("Reducer world is not loaded: " + worldName);
             return false;
         }
 
@@ -107,13 +82,12 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
                 (float) getConfig().getDouble("npc.pitch", 0.0)
         );
 
-        // Create a real player-model NPC through Citizens.
         reducer = CitizensAPI.getNPCRegistry().createNPC(
                 EntityType.PLAYER,
                 ChatColor.RED + "Knockback Trainer"
         );
 
-        // It must be possible to hit the NPC to activate it.
+        // Allow hits to reach the damage event.
         reducer.setProtected(false);
 
         if (!reducer.spawn(home)) {
@@ -122,7 +96,6 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
             return false;
         }
 
-        targetId = null;
         return true;
     }
 
@@ -135,34 +108,55 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * Any player who hits the reducer becomes the active target.
-     * The NPC itself never takes damage.
+     * Each player hit causes one knockback.
+     * No repeating attack timer is used.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
-    public void onReducerHit(EntityDamageByEntityEvent event) {
+    public void onReducerHit(final EntityDamageByEntityEvent event) {
         if (!isReducer(event.getEntity())) {
             return;
         }
 
+        // NPC cannot lose health, but remains attackable.
         event.setCancelled(true);
 
-        if (event.getDamager() instanceof Player) {
-            Player attacker = (Player) event.getDamager();
-
-            if (attacker.isOnline() && !attacker.isDead()) {
-                targetId = attacker.getUniqueId();
-
-                attacker.sendMessage(
-                        ChatColor.GREEN
-                                + "The reducer is now targeting you!"
-                );
-            }
+        if (!(event.getDamager() instanceof Player)) {
+            return;
         }
+
+        final Player attacker = (Player) event.getDamager();
+
+        if (!attacker.isOnline()
+                || attacker.isDead()
+                || attacker.getGameMode() == GameMode.CREATIVE
+                || attacker.getGameMode() == GameMode.SPECTATOR) {
+            return;
+        }
+
+        // Apply after vanilla attack processing.
+        Bukkit.getScheduler().runTask(this, new Runnable() {
+            @Override
+            public void run() {
+                if (!attacker.isOnline()
+                        || attacker.isDead()
+                        || attacker.getGameMode() == GameMode.CREATIVE
+                        || attacker.getGameMode() == GameMode.SPECTATOR) {
+                    return;
+                }
+
+                if (home == null
+                        || !attacker.getWorld().equals(home.getWorld())
+                        || attacker.getLocation().getY() < 0) {
+                    return;
+                }
+
+                applyKnockback(attacker);
+            }
+        });
     }
 
     /*
-     * Prevent every other type of damage to the reducer,
-     * including fall, fire, and environmental damage.
+     * Cancel all damage to the reducer, including environmental damage.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onReducerDamage(EntityDamageEvent event) {
@@ -172,7 +166,7 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * Disable fall damage for all players in every game mode.
+     * Disable fall damage for all players.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onFallDamage(EntityDamageEvent event) {
@@ -183,8 +177,8 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * Rescue Survival players who go below Y = 0.
-     * If the player is the active target, clear the target FIRST.
+     * Rescue Survival players below Y = 0.
+     * Clear their inventory and give the training kit after teleport.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerMove(PlayerMoveEvent event) {
@@ -193,11 +187,6 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
         }
 
         Player player = event.getPlayer();
-
-        if (targetId != null
-                && targetId.equals(player.getUniqueId())) {
-            targetId = null;
-        }
 
         if (player.getGameMode() != GameMode.SURVIVAL) {
             return;
@@ -222,51 +211,39 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
                 player.getLocation().getPitch()
         );
 
-        player.teleport(destination);
-        player.setFallDistance(0.0F);
+        if (player.teleport(destination)) {
+            player.setFallDistance(0.0F);
+            giveTrainingKit(player);
+        }
+    }
+
+    private void giveTrainingKit(Player player) {
+        // Spigot 1.8.8 has no separate off-hand slot.
+        player.getInventory().clear();
+        player.getInventory().setArmorContents(null);
+
+        // Diamond sword with Knockback II.
+        ItemStack sword = new ItemStack(Material.DIAMOND_SWORD);
+        sword.addUnsafeEnchantment(Enchantment.KNOCKBACK, 2);
+        player.getInventory().addItem(sword);
+
+        // Four full stacks of sandstone.
+        for (int i = 0; i < 4; i++) {
+            player.getInventory().addItem(
+                    new ItemStack(Material.SANDSTONE, 64)
+            );
+        }
+
+        player.updateInventory();
     }
 
     /*
-     * Knock back the latest attacker at each configured interval.
+     * Push the player away from the reducer's configured position.
      */
-    private void attackTarget() {
-        if (targetId == null) {
-            return;
-        }
-
-        Player target = Bukkit.getPlayer(targetId);
-
-        if (target == null || !target.isOnline() || target.isDead()) {
-            targetId = null;
-            return;
-        }
-
-        if (target.getGameMode() == GameMode.CREATIVE
-                || target.getGameMode() == GameMode.SPECTATOR) {
-            targetId = null;
-            return;
-        }
-
-        // Only attack players in the reducer's world.
-        if (!target.getWorld().equals(home.getWorld())) {
-            targetId = null;
-            return;
-        }
-
-        // Safety check in case a movement event was missed.
-        if (target.getLocation().getY() < 0) {
-            targetId = null;
-            return;
-        }
-
-        applyKnockback(target);
-    }
-
     private void applyKnockback(Player player) {
         Vector direction = player.getLocation().toVector()
                 .subtract(home.toVector());
 
-        // Knockback direction should be horizontal.
         direction.setY(0);
 
         if (direction.lengthSquared() < 0.0001) {
@@ -283,8 +260,7 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
     }
 
     /*
-     * Reset NPC velocity and position so that it cannot be
-     * knocked away from its configured location.
+     * Keep the NPC stationary and reset its velocity every tick.
      */
     private void keepReducerStationary() {
         if (reducer == null || !reducer.isSpawned() || home == null) {
@@ -298,20 +274,12 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
         }
 
         if (!entity.getWorld().equals(home.getWorld())
-                || entity.getLocation().distanceSquared(home) > 0.01) {
+                || entity.getLocation().distanceSquared(home) > 0.0001) {
             entity.teleport(home);
         }
 
         entity.setVelocity(new Vector(0, 0, 0));
         entity.setFallDistance(0.0F);
-    }
-
-    @EventHandler
-    public void onPlayerQuit(PlayerQuitEvent event) {
-        if (targetId != null
-                && targetId.equals(event.getPlayer().getUniqueId())) {
-            targetId = null;
-        }
     }
 
     /*
@@ -345,10 +313,7 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
             sender.sendMessage(ChatColor.YELLOW
                     + "Vertical: " + verticalKnockback);
             sender.sendMessage(ChatColor.YELLOW
-                    + "Interval: " + attackInterval + " ticks");
-            sender.sendMessage(ChatColor.YELLOW
-                    + "Target: "
-                    + (targetId == null ? "none" : targetId.toString()));
+                    + "Mode: one knockback per hit");
             return true;
         }
 
@@ -407,8 +372,6 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
 
     @Override
     public void onDisable() {
-        targetId = null;
-
         if (reducer != null) {
             if (reducer.isSpawned()) {
                 reducer.despawn();

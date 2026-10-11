@@ -39,7 +39,7 @@ and configure the coordinates:
 ---
 #### Optional runtime config:
 
-The knockback and attack interval are configurable:
+The knockback (default: vertical: 0.365, horizontal: 1.2) and attack interval (default: 0.5s or 10 ticks) are configurable:
 
 either via commands
 

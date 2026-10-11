@@ -6,7 +6,7 @@ MC version: 1.8.8
 
 Server type: Spigot
 
->NOTE: The player always gets safely teleported to the given coordinates (config) if they fall below Y = 0. This only happens in survial mode and is intended behaviour. Also the mod disables FallDamage.
+>NOTE: The player always gets safely teleported to the given coordinates (config) if they fall below Y = 0. This only happens in survial mode and is intended behaviour. Also the mod disables falldamage entirely to avoid the player dying.
 
 ---
 #### Mandatory config:

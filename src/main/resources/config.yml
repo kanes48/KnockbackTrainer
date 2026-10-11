@@ -16,8 +16,13 @@ npc:
   pitch: 0.0
 
   # Time between knockback hits, in server ticks
-  attack-interval-ticks: 20
+  attack-interval-ticks: 10
 
   # Initial knockback strength
-  horizontal-knockback: 1.15
-  vertical-knockback: 0.42
+  horizontal-knockback: 1.2
+  vertical-knockback: 0.365
+
+cleanup:
+  radius: 25
+  height: 10
+  depth: 25

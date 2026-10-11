@@ -7,7 +7,7 @@
   commands:
     reducer:
       description: Manage the knockback reducer
-      usage: /reducer <kb|status>
+      usage: /reducer <kb|delay|status>
       permission: reducer.admin
 
   permissions:

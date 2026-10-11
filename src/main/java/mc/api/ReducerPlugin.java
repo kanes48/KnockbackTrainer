@@ -21,9 +21,17 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Vector;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.UUID;
+
+import org.bukkit.block.Block;
+
 
 public class ReducerPlugin extends JavaPlugin implements Listener {
 
@@ -32,6 +40,22 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
 
     private double horizontalKnockback;
     private double verticalKnockback;
+
+    // The currently active target.
+    private UUID targetId = null;
+
+    // Last tick when a target was knocked back.
+    private long lastAttackTick = 0L;
+
+    // Server tick counter for Spigot 1.8.8.
+    private long serverTicks = 0L;
+
+    private long attackDelayTicks;
+    private static final double ATTACK_REACH = 3.0D;
+
+    private int sandstoneCleanupRadius = 25;
+    private int sandstoneCleanupHeight = 25;
+    private int sandstoneCleanupDepth = 25;
 
     @Override
     public void onEnable() {
@@ -49,18 +73,37 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
         Bukkit.getScheduler().runTaskTimer(this, new Runnable() {
             @Override
             public void run() {
+                serverTicks++;
+
                 keepReducerStationary();
+                attackTarget();
             }
         }, 1L, 1L);
     }
 
     private void loadSettings() {
         horizontalKnockback = getConfig().getDouble(
-                "npc.horizontal-knockback", 1.15
+                "npc.horizontal-knockback", 1.2
+        );
+
+        attackDelayTicks = getConfig().getLong(
+                "npc.attack-interval-ticks", 10
         );
 
         verticalKnockback = getConfig().getDouble(
-                "npc.vertical-knockback", 0.42
+                "npc.vertical-knockback", 0.365
+        );
+
+        sandstoneCleanupRadius = Math.max(
+                0, getConfig().getInt("cleanup.radius", 5)
+        );
+
+        sandstoneCleanupHeight = Math.max(
+                0, getConfig().getInt("cleanup.height", 5)
+        );
+
+        sandstoneCleanupDepth = Math.max(
+                0, getConfig().getInt("cleanup.depth", 5)
         );
     }
 
@@ -107,24 +150,57 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
                 .equals(entity.getUniqueId());
     }
 
+    private void attackTarget() {
+        if (targetId == null) {
+            return;
+        }
+
+        Player target = Bukkit.getPlayer(targetId);
+
+        // Stop tracking the target if they are no longer a valid player.
+        if (target == null || !target.isOnline() || target.isDead()
+                || target.getGameMode() == GameMode.CREATIVE
+                || target.getGameMode() == GameMode.SPECTATOR) {
+            targetId = null;
+            return;
+        }
+
+        // Only attack players in the same world as the reducer.
+        if (!target.getWorld().equals(home.getWorld())) {
+            return;
+        }
+
+        // Only attack when the player is within 3 blocks of the reducer.
+        if (target.getLocation().distanceSquared(home) > ATTACK_REACH * ATTACK_REACH) {
+            return;
+        }
+
+        // Attack repeatedly at the configured interval, but only within reach.
+        if (serverTicks - lastAttackTick >= attackDelayTicks) {
+            applyKnockback(target);
+            lastAttackTick = serverTicks;
+        }
+    }
+
     /*
-     * Each player hit causes one knockback.
-     * No repeating attack timer is used.
+     * Activate the reducer when a player hits it.
+     * Repeated hits do not reset the attack timer.
+     * The repeating task handles subsequent attacks at the configured interval.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
-    public void onReducerHit(final EntityDamageByEntityEvent event) {
+    public void onReducerHit(EntityDamageByEntityEvent event) {
         if (!isReducer(event.getEntity())) {
             return;
         }
 
-        // NPC cannot lose health, but remains attackable.
+        // The reducer never takes damage.
         event.setCancelled(true);
 
         if (!(event.getDamager() instanceof Player)) {
             return;
         }
 
-        final Player attacker = (Player) event.getDamager();
+        Player attacker = (Player) event.getDamager();
 
         if (!attacker.isOnline()
                 || attacker.isDead()
@@ -133,26 +209,44 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
             return;
         }
 
-        // Apply after vanilla attack processing.
-        Bukkit.getScheduler().runTask(this, new Runnable() {
-            @Override
-            public void run() {
-                if (!attacker.isOnline()
-                        || attacker.isDead()
-                        || attacker.getGameMode() == GameMode.CREATIVE
-                        || attacker.getGameMode() == GameMode.SPECTATOR) {
-                    return;
-                }
+        // Only activate when there is no current target.
+        // Rapid clicking cannot reset the timer or trigger extra attacks.
+        if (targetId == null) {
+            targetId = attacker.getUniqueId();
 
-                if (home == null
-                        || !attacker.getWorld().equals(home.getWorld())
-                        || attacker.getLocation().getY() < 0) {
-                    return;
-                }
+            // Allow the first knockback immediately.
+            lastAttackTick = serverTicks - attackDelayTicks;
+        }
+    }
 
-                applyKnockback(attacker);
+    private void clearNearbySandstone(Location center) {
+        World world = center.getWorld();
+
+        if (world == null) {
+            return;
+        }
+
+        int centerX = center.getBlockX();
+        int centerY = center.getBlockY();
+        int centerZ = center.getBlockZ();
+
+        for (int x = centerX - sandstoneCleanupRadius;
+             x <= centerX + sandstoneCleanupRadius; x++) {
+
+            for (int y = centerY - sandstoneCleanupDepth;
+                 y <= centerY + sandstoneCleanupHeight; y++) {
+
+                for (int z = centerZ - sandstoneCleanupRadius;
+                     z <= centerZ + sandstoneCleanupRadius; z++) {
+
+                    Block block = world.getBlockAt(x, y, z);
+
+                    if (block.getType() == Material.SANDSTONE) {
+                        block.setType(Material.AIR);
+                    }
+                }
             }
-        });
+        }
     }
 
     /*
@@ -211,9 +305,26 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
                 player.getLocation().getPitch()
         );
 
+        Location originalLocation = player.getLocation().clone();
+
+        if (targetId != null
+                && targetId.equals(player.getUniqueId())) {
+            targetId = null;
+        }
+
         if (player.teleport(destination)) {
             player.setFallDistance(0.0F);
+
+            clearNearbySandstone(originalLocation);
             giveTrainingKit(player);
+        }
+    }
+
+    @EventHandler
+    public void onPlayerQuit(PlayerQuitEvent event) {
+        if (targetId != null
+                && targetId.equals(event.getPlayer().getUniqueId())) {
+            targetId = null;
         }
     }
 
@@ -282,91 +393,137 @@ public class ReducerPlugin extends JavaPlugin implements Listener {
         entity.setFallDistance(0.0F);
     }
 
-    /*
-     * Commands:
-     * /reducer kb <horizontal> <vertical>
-     * /reducer status
-     */
     @Override
-    public boolean onCommand(
-            CommandSender sender,
-            Command command,
-            String label,
-            String[] args
-    ) {
-        if (!command.getName().equalsIgnoreCase("reducer")) {
-            return false;
-        }
+    public boolean onCommand(CommandSender sender, Command command,
+                             String label, String[] args) {
 
-        if (!sender.hasPermission("reducer.admin")) {
-            sender.sendMessage(
-                    ChatColor.RED + "You do not have permission."
-            );
+        // Only players can use this command.
+        if (!(sender instanceof Player)) {
+            sender.sendMessage("This command can only be used by a player.");
             return true;
         }
 
-        if (args.length == 1
-                && args[0].equalsIgnoreCase("status")) {
-            sender.sendMessage(ChatColor.GOLD + "Reducer status");
-            sender.sendMessage(ChatColor.YELLOW
-                    + "Horizontal: " + horizontalKnockback);
-            sender.sendMessage(ChatColor.YELLOW
-                    + "Vertical: " + verticalKnockback);
-            sender.sendMessage(ChatColor.YELLOW
-                    + "Mode: one knockback per hit");
+        Player player = (Player) sender;
+
+        // Check whether the player has permission to manage the reducer.
+        if (!player.hasPermission("reducer.admin")) {
+            player.sendMessage(ChatColor.RED
+                    + "You don't have permission to use this command.");
             return true;
         }
 
-        if (args.length == 3
-                && (args[0].equalsIgnoreCase("kb")
-                || args[0].equalsIgnoreCase("knockback"))) {
+        // Display command usage when no arguments are provided.
+        if (args.length == 0) {
+            player.sendMessage(ChatColor.YELLOW
+                    + "Reducer commands:");
+            player.sendMessage(ChatColor.YELLOW
+                    + "/reducer kb <horizontal> <vertical>");
+            player.sendMessage(ChatColor.YELLOW
+                    + "/reducer delay <seconds>");
+            player.sendMessage(ChatColor.YELLOW
+                    + "/reducer status");
+            return true;
+        }
 
-            final double horizontal;
-            final double vertical;
+        // Change the reducer's horizontal and vertical knockback strength.
+        if (args[0].equalsIgnoreCase("kb")) {
+            if (args.length != 3) {
+                player.sendMessage(ChatColor.YELLOW
+                        + "Usage: /reducer kb <horizontal> <vertical>");
+                return true;
+            }
 
             try {
-                horizontal = Double.parseDouble(args[1]);
-                vertical = Double.parseDouble(args[2]);
-            } catch (NumberFormatException ex) {
-                sender.sendMessage(ChatColor.RED
-                        + "Both knockback values must be numbers.");
-                return true;
+                double horizontal = Double.parseDouble(args[1]);
+                double vertical = Double.parseDouble(args[2]);
+
+                // Reject invalid numeric values.
+                if (Double.isNaN(horizontal) || Double.isInfinite(horizontal)
+                        || Double.isNaN(vertical) || Double.isInfinite(vertical)
+                        || horizontal < 0.0D || vertical < 0.0D) {
+                    player.sendMessage(ChatColor.RED
+                            + "Knockback values must be valid non-negative numbers.");
+                    return true;
+                }
+
+                // Update the knockback values used by the reducer.
+                horizontalKnockback = horizontal;
+                verticalKnockback = vertical;
+
+                player.sendMessage(ChatColor.GREEN
+                        + "Reducer knockback updated: horizontal="
+                        + horizontalKnockback
+                        + ", vertical=" + verticalKnockback);
+
+            } catch (NumberFormatException e) {
+                player.sendMessage(ChatColor.RED
+                        + "Please enter valid numbers for knockback.");
             }
 
-            if (Double.isNaN(horizontal)
-                    || Double.isInfinite(horizontal)
-                    || Double.isNaN(vertical)
-                    || Double.isInfinite(vertical)
-                    || horizontal < 0
-                    || vertical < 0
-                    || horizontal > 10
-                    || vertical > 10) {
-                sender.sendMessage(ChatColor.RED
-                        + "Values must be between 0 and 10.");
-                return true;
-            }
-
-            horizontalKnockback = horizontal;
-            verticalKnockback = vertical;
-
-            getConfig().set(
-                    "npc.horizontal-knockback", horizontalKnockback
-            );
-            getConfig().set(
-                    "npc.vertical-knockback", verticalKnockback
-            );
-
-            saveConfig();
-
-            sender.sendMessage(ChatColor.GREEN
-                    + "Knockback updated: horizontal=" + horizontalKnockback
-                    + ", vertical=" + verticalKnockback);
             return true;
         }
 
-        sender.sendMessage(ChatColor.YELLOW
-                + "/reducer kb <horizontal> <vertical>");
-        sender.sendMessage(ChatColor.YELLOW + "/reducer status");
+        // Set the delay between repeated attacks, in seconds.
+        // The default is 14 ticks, which equals 0.7 seconds.
+        if (args[0].equalsIgnoreCase("delay")) {
+            if (args.length != 2) {
+                player.sendMessage(ChatColor.YELLOW
+                        + "Usage: /reducer delay <seconds>");
+                player.sendMessage(ChatColor.GRAY
+                        + "Example: /reducer delay 0.7");
+                return true;
+            }
+
+            try {
+                double seconds = Double.parseDouble(args[1]);
+
+                // Ensure the delay is a positive, finite number.
+                if (seconds <= 0.0D || Double.isNaN(seconds)
+                        || Double.isInfinite(seconds)) {
+                    player.sendMessage(ChatColor.RED
+                            + "Delay must be greater than 0.");
+                    return true;
+                }
+
+                // Convert seconds to Minecraft ticks (20 ticks = 1 second).
+                attackDelayTicks = Math.max(1L,
+                        Math.round(seconds * 20.0D));
+
+                player.sendMessage(ChatColor.GREEN
+                        + "Reducer attack delay set to "
+                        + String.format(java.util.Locale.US, "%.2f",
+                        attackDelayTicks / 20.0D)
+                        + " seconds (" + attackDelayTicks + " ticks).");
+
+            } catch (NumberFormatException e) {
+                player.sendMessage(ChatColor.RED
+                        + "Please enter a valid number of seconds.");
+            }
+
+            return true;
+        }
+
+        // Display the current reducer settings.
+        if (args[0].equalsIgnoreCase("status")) {
+            player.sendMessage(ChatColor.GOLD
+                    + "----- Reducer Status -----");
+            player.sendMessage(ChatColor.YELLOW
+                    + "Horizontal knockback: " + horizontalKnockback);
+            player.sendMessage(ChatColor.YELLOW
+                    + "Vertical knockback: " + verticalKnockback);
+            player.sendMessage(ChatColor.YELLOW
+                    + "Attack delay: "
+                    + String.format(java.util.Locale.US, "%.2f",
+                    attackDelayTicks / 20.0D)
+                    + " seconds (" + attackDelayTicks + " ticks)");
+            player.sendMessage(ChatColor.YELLOW
+                    + "Attack reach: " + ATTACK_REACH + " blocks");
+            return true;
+        }
+
+        // Inform the player when they enter an unknown subcommand.
+        player.sendMessage(ChatColor.RED
+                + "Unknown command. Use /reducer for help.");
         return true;
     }
 

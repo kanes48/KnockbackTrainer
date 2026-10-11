@@ -1,0 +1,5 @@
+name: ReducerPlugin
+version: 1.0.0
+main: mc.api.ReducerPlugin
+author: kanes48
+description: Has functionality for a knockback trainer.

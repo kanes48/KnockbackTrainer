@@ -16,7 +16,7 @@ You will need a version of Citizens plugin compatible with Minecraft 1.8.8 for t
 
 Ill provide a link to the correct build on their jenkins [here](https://ci.citizensnpcs.co/job/Citizens2/2803/) (Citizens-2.0.30-b2803.jar).
 
-Put that jar file into the plugins folder alongside the KnockbackTrainer.jar.
+Put that jar file into the plugins folder alongside the KnockbackTrainer.jar (found at the GitHub releases)
 
 ---
 

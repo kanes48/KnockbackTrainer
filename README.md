@@ -6,6 +6,8 @@ MC version: 1.8.8
 
 Server type: Spigot
 
+>NOTE: The player always gets safely teleported to the given coordinates (config) if they fall below Y = 0. This only happens in survial mode and is intended behaviour. Also the mod disables FallDamage.
+
 ---
 #### Mandatory config:
 
@@ -16,7 +18,7 @@ and configure the coordinates:
 - where player gets teleported to
 - where reducer spawns
 
-> Furthermore build your own arena#
+- Furthermore build your own arena!
 
 ---
 #### Optional runtime config:

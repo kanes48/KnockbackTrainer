@@ -6,12 +6,17 @@ MC version: 1.8.8
 
 Server type: Spigot
 
+==> Server jar download [here](https://getbukkit.org/download/spigot/1.8.8) (if needed)
+
 ---
 
 ### Necessary dependencies
 
-You will need a version of Citizens compatible with Minecraft 1.8.8 for the mod to work!
+You will need a version of Citizens plugin compatible with Minecraft 1.8.8 for the mod to work!
+
 Ill provide a link to the correct build on their jenkins [here](https://ci.citizensnpcs.co/job/Citizens2/2803/) (Citizens-2.0.30-b2803.jar).
+
+Put that jar file into the plugins folder alongside the KnockbackTrainer.jar.
 
 ---
 
